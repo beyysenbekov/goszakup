@@ -90,31 +90,53 @@ async def fetch_and_notify(app: Application) -> int:
 
 async def send_announcement(bot, chat_id: int, ann: dict):
     ann_id = ann.get("id", "")
-    name = ann.get("name_ru") or ann.get("name_kz") or f"Объявление #{ann_id}"
     number = ann.get("number_anno", ann_id)
     end_date = (ann.get("end_date") or "")[:10] or "не указана"
     publish_date = (ann.get("publish_date") or "")[:10] or ""
-    delivery = parser.format_delivery(ann)
-
-    try:
-        amount_str = f"{float(ann.get('total_sum', 0)):,.0f} ₸".replace(",", " ")
-    except (ValueError, TypeError):
-        amount_str = "не указана"
-
     url = f"https://goszakup.gov.kz/ru/announce/index/{ann_id}"
-    text = (
-        f"📢 *Новое объявление №{number}*\n\n"
-        f"📋 {name}\n\n"
-        f"💰 Сумма: *{amount_str}*\n"
-        f"📍 Место доставки: {delivery}\n"
+
+    lots_info = parser.format_lots_info(ann)
+
+    if not lots_info:
+        # Если лоты пустые — отправляем хотя бы ссылку
+        text = (
+            f"📢 *Объявление №{number}*\n"
+            f"📍 Область Абай / Район Мақаншы\n"
+            f"📅 Срок подачи: {end_date}\n"
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Открыть на сайте", url=url)]])
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown",
+                               reply_markup=keyboard, disable_web_page_preview=True)
+        return
+
+    # Если лотов несколько — отправляем одно сообщение со всеми лотами
+    header = (
+        f"📢 *Объявление №{number}*\n"
         f"📅 Срок подачи: {end_date}\n"
     )
     if publish_date:
-        text += f"🗓 Опубликовано: {publish_date}\n"
+        header += f"🗓 Опубликовано: {publish_date}\n"
+    header += "\n"
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 Открыть на сайте", url=url)]
-    ])
+    lots_text = ""
+    for i, lot in enumerate(lots_info, 1):
+        prefix = f"*Лот {i}:*\n" if len(lots_info) > 1 else ""
+        lots_text += (
+            f"{prefix}"
+            f"📋 {lot['name']}\n"
+            f"💰 Сумма: *{lot['amount']}*\n"
+            f"📍 {lot['delivery']}\n"
+        )
+        if i < len(lots_info):
+            lots_text += "\n"
+
+    text = header + lots_text
+
+    # Telegram ограничивает сообщение 4096 символами
+    if len(text) > 4000:
+        text = text[:4000] + "...\n"
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Открыть на сайте", url=url)]])
     await bot.send_message(
         chat_id=chat_id, text=text,
         parse_mode="Markdown", reply_markup=keyboard,
@@ -132,7 +154,7 @@ def main():
     scheduler.add_job(fetch_and_notify, "interval",
                       hours=CHECK_INTERVAL_HOURS, args=[app], id="check_job")
     scheduler.start()
-    logger.info(f"Бот запущен. Без токена API. Проверка каждые {CHECK_INTERVAL_HOURS} ч.")
+    logger.info(f"Бот запущен. Проверка каждые {CHECK_INTERVAL_HOURS} ч.")
     app.run_polling(drop_pending_updates=True)
 
 
