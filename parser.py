@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://ows.goszakup.gov.kz"
 ANNOUNCE_URL = f"{BASE_URL}/trd-buy/all"
-LOTS_URL = f"{BASE_URL}/lots"
+LOTS_URL = f"{BASE_URL}/lots/number-anno"
 
 
 class GoszakupParser:
@@ -17,52 +17,58 @@ class GoszakupParser:
         }
 
     async def get_new_announcements(self, limit: int = 50) -> list:
-        params = {
-            "limit": limit,
-            "ref_buy_status_id": 220,  # активные объявления
-        }
+        params = {"limit": limit, "ref_buy_status_id": 220}
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    ANNOUNCE_URL,
-                    params=params,
+                    ANNOUNCE_URL, params=params,
                     headers=self.headers,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status != 200:
-                        logger.error(f"API вернул статус {resp.status}")
+                        logger.error(f"API статус {resp.status}")
                         return await self._scrape_fallback(session)
 
                     data = await resp.json(content_type=None)
                     items = data.get("items", [])
-                    logger.info(f"Получено {len(items)} объявлений из API")
-                    filtered = await self._filter_by_region(session, items)
-                    return filtered
+                    logger.info(f"Получено {len(items)} объявлений")
+
+                    # Для каждого объявления подгружаем лоты
+                    enriched = await self._enrich_with_lots(session, items)
+                    return enriched
 
         except Exception as e:
             logger.error(f"Ошибка: {e}")
             return []
 
-    async def _filter_by_region(self, session, items):
-        filtered = []
+    async def _enrich_with_lots(self, session, items):
+        """
+        Подгружает лоты для каждого объявления.
+        Фильтрует по региону. Сохраняет лоты нужного региона в item['_lots'].
+        """
+        result = []
         for item in items:
             ann_id = item.get("id")
             if not ann_id:
                 continue
             try:
                 lots = await self._get_lots(session, ann_id)
-                if self._lots_match_region(lots):
-                    item["_lots"] = lots
-                    filtered.append(item)
+                matched_lots = [l for l in lots if self._lot_matches_region(l)]
+                if matched_lots:
+                    item["_lots"] = matched_lots
+                    result.append(item)
             except Exception as e:
                 logger.warning(f"Ошибка лотов #{ann_id}: {e}")
-        logger.info(f"После фильтра: {len(filtered)} объявлений")
-        return filtered
+
+        logger.info(f"После фильтра по региону: {len(result)} объявлений")
+        return result
 
     async def _get_lots(self, session, ann_id):
-        url = f"{LOTS_URL}/number-anno/{ann_id}"
-        async with session.get(url, headers=self.headers,
-                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        url = f"{LOTS_URL}/{ann_id}"
+        async with session.get(
+            url, headers=self.headers,
+            timeout=aiohttp.ClientTimeout(total=15)
+        ) as resp:
             if resp.status != 200:
                 return []
             data = await resp.json(content_type=None)
@@ -70,26 +76,23 @@ class GoszakupParser:
                 return data
             return data.get("items", [])
 
-    def _lots_match_region(self, lots):
-        for lot in lots:
-            kato = str(lot.get("ref_kato_code") or "")
-            # КАТО Абайской области начинается с 63
-            if kato.startswith("63"):
-                return True
-            combined = " ".join([
-                lot.get("delivery_place_name_ru") or "",
-                lot.get("delivery_place_name_kz") or "",
-                lot.get("full_delivery_place_name_ru") or "",
-                lot.get("full_delivery_place_name_kz") or "",
-            ]).lower()
-            for region in DELIVERY_REGIONS:
-                if region.lower() in combined:
-                    return True
-        return False
+    def _lot_matches_region(self, lot):
+        # Проверка по КАТО-коду (надёжнее всего)
+        kato = str(lot.get("ref_kato_code") or "")
+        if kato.startswith("63"):
+            return True
+        # Запасная проверка по тексту
+        combined = " ".join([
+            lot.get("delivery_place_name_ru") or "",
+            lot.get("delivery_place_name_kz") or "",
+            lot.get("full_delivery_place_name_ru") or "",
+            lot.get("full_delivery_place_name_kz") or "",
+        ]).lower()
+        return any(r.lower() in combined for r in DELIVERY_REGIONS)
 
     async def _scrape_fallback(self, session):
-        logger.info("Резервный парсинг HTML...")
         import re
+        logger.info("Резервный HTML-парсинг...")
         url = "https://goszakup.gov.kz/ru/search/announce"
         params = {"filter[del_region]": "630000000", "filter[status]": "1", "per-page": "20"}
         try:
@@ -100,19 +103,50 @@ class GoszakupParser:
                     return []
                 html = await resp.text()
                 ids = list(set(re.findall(r'/ru/announce/index/(\d+)', html)))
-                return [{"id": int(i), "name_ru": f"Объявление #{i}", "_from_html": True} for i in ids[:20]]
+                return [{"id": int(i), "_lots": []} for i in ids[:20]]
         except Exception as e:
-            logger.error(f"Ошибка резервного парсинга: {e}")
+            logger.error(f"Ошибка HTML-парсинга: {e}")
             return []
 
-    def format_delivery(self, ann):
+    def format_lots_info(self, ann: dict) -> list[dict]:
+        """
+        Возвращает список словарей с данными каждого лота:
+        name, amount, delivery
+        """
         lots = ann.get("_lots", [])
-        if not lots:
-            return "Область Абай / Район Мақаншы"
-        places = set()
-        for lot in lots[:3]:
-            place = (lot.get("full_delivery_place_name_ru") or
-                     lot.get("delivery_place_name_ru") or "").strip()
-            if place:
-                places.add(place)
-        return " | ".join(places) if places else "Область Абай / Район Мақаншы"
+        result = []
+        for lot in lots:
+            name = (
+                lot.get("name_ru") or
+                lot.get("name_kz") or
+                lot.get("lot_name_ru") or
+                lot.get("lot_name_kz") or
+                "Без названия"
+            )
+            # Сумма лота
+            amount = (
+                lot.get("amount") or
+                lot.get("sum") or
+                lot.get("lot_sum") or
+                lot.get("total_sum") or
+                0
+            )
+            try:
+                amount_str = f"{float(amount):,.0f} ₸".replace(",", " ")
+            except (ValueError, TypeError):
+                amount_str = "не указана"
+
+            # Место доставки
+            delivery = (
+                lot.get("full_delivery_place_name_ru") or
+                lot.get("delivery_place_name_ru") or
+                lot.get("full_delivery_place_name_kz") or
+                "Область Абай / Район Мақаншы"
+            ).strip()
+
+            result.append({
+                "name": name,
+                "amount": amount_str,
+                "delivery": delivery,
+            })
+        return result
