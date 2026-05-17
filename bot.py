@@ -22,7 +22,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_subscriber(update.effective_chat.id)
     text = (
         "👋 *Бот мониторинга Госзакупок запущен!*\n\n"
-        "📍 Регион: *Область Абай, Район Мақаншы*\n"
+        "📍 Регион: *Район Мақаншы, Область Абай*\n"
         f"⏰ Проверка каждые *{CHECK_INTERVAL_HOURS} часов*\n"
         "🔓 Работает *без API токена*\n\n"
         "📋 *Команды:*\n"
@@ -44,7 +44,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sub and sub["active"]:
         text = (
             f"✅ *Подписка активна*\n"
-            f"📍 Регион: Область Абай / Район Мақаншы\n"
+            f"📍 Район Мақаншы, Область Абай\n"
             f"⏰ Проверка каждые {CHECK_INTERVAL_HOURS} ч."
         )
     else:
@@ -56,7 +56,7 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Проверяю новые объявления...")
     count = await fetch_and_notify(context.application)
     await update.message.reply_text(
-        f"✅ Готово! Новых объявлений по вашему региону: *{count}*",
+        f"✅ Готово! Новых объявлений по Району Мақаншы: *{count}*",
         parse_mode="Markdown"
     )
 
@@ -84,18 +84,17 @@ async def fetch_and_notify(app: Application) -> int:
             except Exception as e:
                 logger.error(f"Ошибка отправки {sub['chat_id']}: {e}")
 
-    logger.info(f"Новых: {new_count}")
+    logger.info(f"Новых по Мақаншы: {new_count}")
     return new_count
 
 
 async def send_announcement(bot, chat_id: int, ann: dict):
     ann_id = ann.get("id", "")
     number = ann.get("number", ann_id)
-    end_date = ann.get("end_date", "") or "не указана"
-    publish_date = ann.get("publish_date", "") or ""
+    end_date = ann.get("end_date") or "не указана"
+    publish_date = ann.get("publish_date") or ""
     url = f"https://goszakup.gov.kz/ru/announce/index/{ann_id}"
-
-    lots_info = parser.format_lots_info(ann)
+    lots = parser.format_lots_info(ann)
 
     # Заголовок
     header = f"📢 *Объявление №{number}*\n"
@@ -105,27 +104,25 @@ async def send_announcement(bot, chat_id: int, ann: dict):
 
     # Лоты
     lots_text = ""
-    for i, lot in enumerate(lots_info, 1):
-        prefix = f"*Лот {i}:*\n" if len(lots_info) > 1 else ""
+    for i, lot in enumerate(lots, 1):
+        prefix = f"*Лот {i} — {lot['lot_number']}*\n" if len(lots) > 1 else ""
         desc = f"_{lot['description']}_\n" if lot.get("description") else ""
-        qty = f"📦 Количество: {lot['qty']}\n" if lot.get("qty") else ""
-        customer = f"🏢 Заказчик: {lot['customer']}\n" if lot.get("customer") else ""
+        qty_str = f"{lot['qty']} {lot['unit']}".strip()
+        qty_line = f"📦 {qty_str}\n" if qty_str else ""
 
         lots_text += (
             f"{prefix}"
             f"📋 *{lot['name']}*\n"
             f"{desc}"
             f"💰 Сумма: *{lot['amount']}*\n"
-            f"{qty}"
-            f"{customer}"
-            f"📍 {lot['delivery']}\n"
+            f"{qty_line}"
         )
-        if i < len(lots_info):
+        if i < len(lots):
             lots_text += "\n"
 
     text = header + lots_text
 
-    # Обрезаем если слишком длинное
+    # Telegram ограничивает 4096 символов
     if len(text) > 4000:
         text = text[:4000] + "...\n"
 
@@ -149,7 +146,7 @@ def main():
     scheduler.add_job(fetch_and_notify, "interval",
                       hours=CHECK_INTERVAL_HOURS, args=[app], id="check_job")
     scheduler.start()
-    logger.info(f"Бот запущен. Проверка каждые {CHECK_INTERVAL_HOURS} ч.")
+    logger.info(f"Бот запущен. Фильтр: Район Мақаншы. Проверка каждые {CHECK_INTERVAL_HOURS} ч.")
     app.run_polling(drop_pending_updates=True)
 
 
