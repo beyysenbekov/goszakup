@@ -90,41 +90,34 @@ async def fetch_and_notify(app: Application) -> int:
 
 async def send_announcement(bot, chat_id: int, ann: dict):
     ann_id = ann.get("id", "")
-    number = ann.get("number_anno", ann_id)
-    end_date = (ann.get("end_date") or "")[:10] or "не указана"
-    publish_date = (ann.get("publish_date") or "")[:10] or ""
+    number = ann.get("number", ann_id)
+    end_date = ann.get("end_date", "") or "не указана"
+    publish_date = ann.get("publish_date", "") or ""
     url = f"https://goszakup.gov.kz/ru/announce/index/{ann_id}"
 
     lots_info = parser.format_lots_info(ann)
 
-    if not lots_info:
-        # Если лоты пустые — отправляем хотя бы ссылку
-        text = (
-            f"📢 *Объявление №{number}*\n"
-            f"📍 Область Абай / Район Мақаншы\n"
-            f"📅 Срок подачи: {end_date}\n"
-        )
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Открыть на сайте", url=url)]])
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown",
-                               reply_markup=keyboard, disable_web_page_preview=True)
-        return
-
-    # Если лотов несколько — отправляем одно сообщение со всеми лотами
-    header = (
-        f"📢 *Объявление №{number}*\n"
-        f"📅 Срок подачи: {end_date}\n"
-    )
+    # Заголовок
+    header = f"📢 *Объявление №{number}*\n"
     if publish_date:
         header += f"🗓 Опубликовано: {publish_date}\n"
-    header += "\n"
+    header += f"📅 Срок подачи: {end_date}\n\n"
 
+    # Лоты
     lots_text = ""
     for i, lot in enumerate(lots_info, 1):
         prefix = f"*Лот {i}:*\n" if len(lots_info) > 1 else ""
+        desc = f"_{lot['description']}_\n" if lot.get("description") else ""
+        qty = f"📦 Количество: {lot['qty']}\n" if lot.get("qty") else ""
+        customer = f"🏢 Заказчик: {lot['customer']}\n" if lot.get("customer") else ""
+
         lots_text += (
             f"{prefix}"
-            f"📋 {lot['name']}\n"
+            f"📋 *{lot['name']}*\n"
+            f"{desc}"
             f"💰 Сумма: *{lot['amount']}*\n"
+            f"{qty}"
+            f"{customer}"
             f"📍 {lot['delivery']}\n"
         )
         if i < len(lots_info):
@@ -132,11 +125,13 @@ async def send_announcement(bot, chat_id: int, ann: dict):
 
     text = header + lots_text
 
-    # Telegram ограничивает сообщение 4096 символами
+    # Обрезаем если слишком длинное
     if len(text) > 4000:
         text = text[:4000] + "...\n"
 
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Открыть на сайте", url=url)]])
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Открыть на сайте", url=url)]
+    ])
     await bot.send_message(
         chat_id=chat_id, text=text,
         parse_mode="Markdown", reply_markup=keyboard,
